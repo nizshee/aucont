@@ -1,0 +1,4 @@
+OK!
+This is the right text file that should be served
+by http server running inside your container software
+stack.
