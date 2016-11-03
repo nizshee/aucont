@@ -1,51 +1,26 @@
 #include <iostream>
 #include <fstream>
 #include <sys/stat.h>
-#include <ext/stdio_filebuf.h>
 #include <cstring>
-#include <sys/utsname.h>
-#include <sys/mount.h>
-#include <sys/syscall.h>
 #include <wait.h>
-#include <linux/unistd.h>
+#include <cassert>
 
 
 #include "util.h"
 
 
 
-#define errExit(msg)    do { perror(msg); exit(EXIT_FAILURE); \
-                               } while (0)
-
-
-static aucont::action todo[] =
-        {
-            aucont::mount_rootfs,
-            aucont::mkdir_oldroot,
-            aucont::pivot_root,
-            aucont::chdir_after_pivot,
-            aucont::umount_after_pivot,
-            aucont::mount_proc,
-            aucont::mount_dev
-        };
-
 static int child_func(void *arg) {
-    struct utsname uts;
 
     aucont::start_context* ctx = (aucont::start_context*) arg;
 
     if (ctx->is_daemon) daemonize_after_fork();
 
-    // mount
-
-    for (int i = 0; i < 7; ++i) {
-        long status = todo[i].make(ctx);
+    for (int i = 0; i < aucont::todo_size; ++i) {
+        long status = aucont::todo[i].make(ctx);
         if (status < 0) {
-            for (int j = i - 1; j >= 0; --j) {
-                todo[j].canel(ctx);
-            }
-            write(ctx->output_descriptor, "0", 1);
-            write(ctx->output_descriptor, todo[i].name, strlen(todo[i].name));
+            write(ctx->output_descriptor, &i, sizeof(int));
+            write(ctx->output_descriptor, aucont::todo[i].name, strlen(aucont::todo[i].name));
             write(ctx->output_descriptor, ": ", 2);
             write(ctx->output_descriptor, strerror(errno), strlen(strerror(errno)));
             write(ctx->output_descriptor, "\n", 1);
@@ -54,51 +29,18 @@ static int child_func(void *arg) {
         }
     }
 
-//    std::string fs(ctx->fs);
-//    std::string old(fs + "/.pivot_root");
-//
-//    if (mount(fs.c_str(), fs.c_str(), "bind", MS_BIND | MS_REC, NULL) < 0) errExit("mount");
-//
-//    mkdir(old.c_str(), 0777);
-//
-////    status = system(("pivot_root " + fs + " " + old).c_str());
-//    if (syscall(SYS_pivot_root, fs.c_str(), old.c_str())) {
-//        umount(fs.c_str());
-//        errExit("pivot_root");
-//    }
-//
-//    if (chdir("/") < 0) {
-//        umount((old + fs).c_str());
-//        errExit("chdir");
-//    };
-
-
-
     // UTS
     if (sethostname(ctx->hostname, strlen(ctx->hostname)) == -1) errExit("sethostname");
 
-//    status = mount("proc", "/proc", "proc", 0, nullptr);
-//    std::cout << "mount " << status << std::endl;
-
-    if (uname(&uts) == -1) errExit("uname");
-    printf("uts.nodename in child:  %s\n", uts.nodename);
-
-
-    // Write data for parent
-//    std::string id = std::to_string(getuid());
-//    write(ctx->output_descriptor, id.c_str(), id.length());
-//    write(ctx->output_descriptor, "\n", 1);
-//    id = std::to_string(getgid());
-//    write(ctx->output_descriptor, id.c_str(), id.length());
-//    write(ctx->output_descriptor, "\n", 1);
-
-
-    system("ls /");
-    system("ls /proc");
-
-    write(ctx->output_descriptor, "1", 1);
+    int success = -1;
+    write(ctx->output_descriptor, &success, sizeof(int));
     close(ctx->output_descriptor);
-    sleep(10);
+
+    char* params[10];
+    for (int i = 0; i < ctx->argc; ++i) params[i] = ctx->argv[i];
+    params[ctx->argc] = NULL;
+
+    execv(params[0], params);
 
     return 0;
 }
@@ -107,6 +49,8 @@ static int child_func(void *arg) {
 
 int main(int argc, char *argv[]) {
 
+    aucont::check_directory();
+
     int pipefd[2];
     if (pipe(pipefd) == -1) {
         perror("pipe");
@@ -114,15 +58,35 @@ int main(int argc, char *argv[]) {
     }
 
     aucont::start_context* ctx = (aucont::start_context *) malloc(sizeof(aucont::start_context));
-    ctx->output_descriptor = pipefd[1];
     ctx->is_daemon = false;
+    ctx->argc = 0;
+    bool fs = false;
+    for (int i = 1; i < argc; ++i) {
+        if (strcmp(argv[i], "-d") == 0) {
+            ctx->is_daemon = true;
+        }
+        else if (!fs) {
+            strcpy(ctx->fs, argv[i]);
+            fs = !fs;
+        }
+        else {
+            strcpy(ctx->argv[ctx->argc++], argv[i]);
+        }
+    }
+
+    assert(fs);
+
+    ctx->output_descriptor = pipefd[1];
     strcpy(ctx->hostname, "container");
-    strcpy(ctx->fs, "/test/rootfs");
+//    strcpy(ctx->fs, "/test/rootfs");
+//    strcpy(ctx->argv[0], "/bin/hostname");
+//    ctx->argc = 1;
+
+
 
     void *stack;                    /* Start of stack buffer */
     void *stackTop;                 /* End of stack buffer */
     pid_t pid;
-    struct utsname uts;
 
     /* Allocate stack for child */
 
@@ -134,30 +98,34 @@ int main(int argc, char *argv[]) {
     pid = clone(child_func, stackTop, CLONE_NEWUTS | CLONE_NEWPID | CLONE_NEWNS | SIGCHLD, ctx);
     if (pid == -1) errExit("clone");
     close(pipefd[1]);
-    printf("clone() returned %ld\n", (long) pid);
 
 
+    int result;
     char buf;
-    if (read(pipefd[0], &buf, 1) > 0) {
-        if (buf == '0') {
+    if (read(pipefd[0], &result, sizeof(int)) > 0) {
+        if (result >= 0) {
             while (read(pipefd[0], &buf, 1) > 0) write(STDOUT_FILENO, &buf, 1);
+            for (int j = result - 1; j >= 0; --j) {
+                aucont::todo[j].cancel(ctx);
+            }
+            close(pipefd[0]);
             exit(EXIT_FAILURE);
         }
     } else {
         std::cerr << "no response from container" << std::endl;
+        close(pipefd[0]);
         exit(EXIT_FAILURE);
     }
-
     close(pipefd[0]);
 
 
-
-
-    if (uname(&uts) == -1) errExit("uname");
-    printf("uts.nodename in parent: %s\n", uts.nodename);
+    aucont::create_context(pid, *ctx); // TODO kill if not created
 
     if (!ctx->is_daemon) {
         if (waitpid(pid, NULL, 0) == -1) errExit("waitpid");
+        aucont::remove_context(pid);
+    } else {
+        std::cout << pid << std::endl;
     }
 
     exit(EXIT_SUCCESS);
@@ -168,7 +136,7 @@ void pre_start(std::ostream&& os) { // initialize container and publish id
 
     // create home directory for aucont
     struct stat st = {0};
-    if (stat(aucont::dir.c_str(), &st) == -1 && mkdir(aucont::dir.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH) < 0) {
+    if (stat(aucont::home_dir.c_str(), &st) == -1 && mkdir(aucont::home_dir.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH) < 0) {
         os << "Can't create home directory for aucont." << std::endl;
         exit(1);
     }
@@ -180,7 +148,7 @@ void pre_start(std::ostream&& os) { // initialize container and publish id
     }
 
     // Change hostname
-    system("hostname container");
+//    system("hostname container");
 
     std::string hostname;
     std::fstream host("/proc/sys/kernel/hostname");
@@ -194,7 +162,7 @@ void pre_start(std::ostream&& os) { // initialize container and publish id
 
     // post pid
     pid_t pid = getpid();
-    std::ofstream file(aucont::dir + "/" + std::to_string(pid));
+    std::ofstream file(aucont::home_dir + "/" + std::to_string(pid));
     file << pid << std::endl;
     file.close();
 
@@ -203,7 +171,7 @@ void pre_start(std::ostream&& os) { // initialize container and publish id
 
 void pre_stop() {
     pid_t pid = getpid();
-    std::remove((aucont::dir + "/" + std::to_string(pid)).c_str());
+    std::remove((aucont::home_dir + "/" + std::to_string(pid)).c_str());
 }
 
 //int main() {
