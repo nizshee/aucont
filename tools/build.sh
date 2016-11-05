@@ -1,5 +1,5 @@
 
 
-mkdir /test/aucont/bin
+# mkdir /test/aucont/bin
 # chmod 777 bin
-g++ -std=c++11 src/aucont_list.cpp src/util.h -o /test/aucont/aucont_list
+# g++ /test/aucont/src/aucont_list.cpp /test/aucont/src/util.h -o /test/aucont/bin/aucont_list

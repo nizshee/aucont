@@ -36,6 +36,8 @@ static int child_func(void *arg) {
 
     execv(params[0], params);
 
+
+
     return EXIT_SUCCESS;
 }
 
