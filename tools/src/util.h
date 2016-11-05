@@ -3,10 +3,13 @@
 #define AUCONT_UTIL_H
 
 #include <cstdlib>
-#include <fstream>
+
 #include <iostream>
+#include <cstring>
+
 
 extern "C" {
+#include <signal.h>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/utsname.h>
@@ -23,8 +26,21 @@ extern "C" {
 
 namespace aucont {
     const std::string home_dir = "/tmp/aucont";
+
+    std::string container_dir(pid_t pid) {
+        return home_dir + "/" + std::to_string(pid);
+    }
+
+    std::string container_ctx(pid_t pid) {
+        return container_dir(pid) + "/ctx";
+    }
+
+    std::string container_old(const char* fs) {
+        return std::string(fs) + "/.old_root";
+    }
+
     typedef struct _start_context {
-        int output_descriptor;
+        pid_t pid;
         bool is_daemon;
         char hostname[100];
         char fs[50];
@@ -32,43 +48,31 @@ namespace aucont {
         uint8_t argc;
     } start_context;
 
-    void create_context(pid_t pid, start_context context) {
-        std::string dir = home_dir + "/" + std::to_string(pid);
-        if (mkdir(dir.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH) < 0) errExit("mkdir for context");
-        std::ofstream ofstream(dir + "/" + "context");
-        ofstream.write((char*) &context, sizeof(start_context));
+    int load_ctx(pid_t pid, start_context& ctx) {
+        FILE* ptr;
+        if ((ptr = fopen(container_ctx(pid).c_str(), "rb")) == NULL ||
+            fread(&ctx, sizeof(start_context), 1, ptr) < 0 ||
+            fclose(ptr)) {
+            return EXIT_FAILURE;
+        }
+        return EXIT_SUCCESS;
     }
 
-    void read_context(pid_t pid, start_context& context) {
-        std::string dir = home_dir + "/" + std::to_string(pid); // TODO exists
-        std::ifstream ifstream(dir + "/" + "context");
-        ifstream.read((char*) &context, sizeof(start_context));
-    }
 
-    void remove_context(pid_t pid) {
-        std::string dir = home_dir + "/" + std::to_string(pid); // TODO
-        remove((dir + "/context").c_str());
-        rmdir(dir.c_str());
-    }
-
-    enum PREPARE_STAGE {
-        FULL,
-        MOUNT,
-        MKDIR,
-        NOTHING
+    enum ENVIRONMENT_STAGE {
+        E_FULL,
+        E_CONTAINER,
+        E_NOTHING
     };
 
-    long prepare_ctx(pid_t, start_context*);
-    void clear_ctx(pid_t, start_context*, PREPARE_STAGE);
+    void clear_environment(start_context&, ENVIRONMENT_STAGE);
 
     /**
-     * Starts host to prepare environment for container.
+     * Starts on host to prepare environment for container.
      */
-    long prepare_ctx(pid_t pid, start_context* ctx) {
+    int prepare_environment(start_context& ctx) {
         FILE *ptr;
         struct stat st = {0};
-        std::string container_dir(home_dir + "/" + std::to_string(pid));
-        std::string context(container_dir + "/context");
 
         if (stat(aucont::home_dir.c_str(), &st) == -1 &&
             mkdir(aucont::home_dir.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH) < 0) {
@@ -76,150 +80,132 @@ namespace aucont {
             return EXIT_FAILURE;
         }
 
-        if (mkdir(container_dir.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH) < 0) {
+        if (mkdir(container_dir(ctx.pid).c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH) < 0) {
             perror("mkdir container");
-            clear_ctx(pid, ctx, NOTHING);
+            clear_environment(ctx, E_NOTHING);
             return EXIT_FAILURE;
         }
 
-        // TODO bind to container directory
-        if (mount(ctx->fs, ctx->fs, "bind", MS_BIND | MS_REC, NULL) < 0) {
-            perror("mount fs directory");
-            clear_ctx(pid, ctx, MKDIR);
-            return EXIT_FAILURE;
-        }
-
-        if ((ptr = fopen(context.c_str(), "wb")) == NULL ||
-            fwrite(ctx, sizeof(start_context), 1, ptr) < 0 ||
+        if ((ptr = fopen(container_ctx(ctx.pid).c_str(), "wb")) == NULL ||
+            fwrite(&ctx, sizeof(start_context), 1, ptr) < 0 ||
             fclose(ptr)) {
             perror("write context");
-            clear_ctx(pid, ctx, MOUNT);
+            clear_environment(ctx, E_FULL);
             return EXIT_FAILURE;
         }
 
         return EXIT_SUCCESS;
     }
 
-    void clear_ctx(pid_t pid, start_context* ctx, PREPARE_STAGE stage=FULL) {
-        std::string container_dir(home_dir + "/" + std::to_string(pid));
+
+    void clear_environment(start_context& ctx, ENVIRONMENT_STAGE stage=E_FULL) {
 
         switch (stage) {
-            case FULL:
-
-            case MOUNT:
-                if (umount(ctx->fs) < 0) perror("unmount fs");
-            case MKDIR:
-                if (rmdir(container_dir.c_str()) < 0) perror("rmdir container");
-            case NOTHING:
+            case E_FULL:
+                if (remove(container_ctx(ctx.pid).c_str()) < 0) perror("rm context");
+            case E_CONTAINER:
+                if (rmdir(container_dir(ctx.pid).c_str()) < 0) perror("rmdir container");
+            case E_NOTHING:
                 break;
         }
     }
 
-    typedef struct _start_params {
-        bool is_daemon = false;
-        int cpu = 100;
-        char* host = nullptr;
-    } start_params;
-
-    typedef struct _action {
-        const char* name;
-        long (*make)(start_context* context);
-        void (*cancel)(start_context* context);
-    } action;
-
-    void empty_cancel(start_context* context) {}
-
-    long mount_rootfs_make(start_context* context) {
-        return mount(context->fs, context->fs, "bind", MS_BIND | MS_REC, NULL);
+    int remove_container(start_context& ctx) {
+        kill(ctx.pid, SIGKILL);
+        clear_environment(ctx);
+        return EXIT_SUCCESS;
     }
 
-    void mount_rootfs_cancel(start_context* context) {
-        umount(context->fs);
+
+
+    enum CONTAINER_STAGE {
+        C_FULL,
+        C_RMDIR,
+        C_UMOUNT,
+        C_PIVOT,
+        C_MOUNT,
+        C_MKDIR,
+        C_NOTHING
+    };
+
+    void clear_container(start_context&, CONTAINER_STAGE);
+
+    int prepare_container(start_context& ctx) {
+
+        if (mkdir(container_old(ctx.fs).c_str(), 0777) < 0) {
+            perror("mkdir old root");
+            clear_container(ctx, C_NOTHING);
+            return EXIT_FAILURE;
+        }
+
+        if (mount(ctx.fs, ctx.fs, "bind", MS_BIND | MS_REC, NULL) < 0) {
+            perror("mount fs");
+            clear_container(ctx, C_MKDIR);
+            return EXIT_FAILURE;
+        }
+
+        if (syscall(SYS_pivot_root, ctx.fs, container_old(ctx.fs).c_str()) < 0) {
+            perror("pivot");
+            clear_container(ctx, C_MOUNT);
+            return EXIT_FAILURE;
+        }
+
+        if (umount2("/.old_root", MNT_DETACH) < 0) {
+            perror("umount old root");
+            clear_container(ctx, C_PIVOT);
+            return EXIT_FAILURE;
+        }
+
+        if (rmdir("/.old_root") < 0) {
+            perror("rmdir old root");
+            clear_container(ctx, C_UMOUNT);
+        }
+
+        if (mount("proc", "/proc", "proc", 0, "") < 0) {
+            perror("proc");
+            return EXIT_FAILURE;
+        }
+
+        if (mount("sys", "/sys", "sysfs", 0, "") < 0) {
+            perror("sys");
+            return EXIT_FAILURE;
+        }
+
+        if (mount("udev", "/dev", "devtmpfs", MS_NOSUID | MS_STRICTATIME, "mode=755") < 0) {
+            perror("udev");
+            return EXIT_FAILURE;
+        }
+
+        if (sethostname(ctx.hostname, strlen(ctx.hostname)) < 0) {
+            return EXIT_FAILURE;
+        }
+
+        return EXIT_SUCCESS;
     }
 
-    long mkdir_oldroot_make(start_context* context) {
-        std::string old(std::string(context->fs) + "/.pivot_root");
-        return mkdir(old.c_str(), 0777);
-    }
-
-    void mkdir_oldroot_cancel(start_context* context) {
-        std::string old(std::string(context->fs) + "/.pivot_root");
-        rmdir(old.c_str());
-    }
-
-    long pivot_root_make(start_context* context) {
-        std::string old(std::string(context->fs) + "/.pivot_root");
-        return syscall(SYS_pivot_root, context->fs, old.c_str());
-    }
-
-    long chdir_after_pivot_make(start_context* context) {
-        return chdir("/");
-    }
-
-    long umount_after_pivot_make(start_context* context) {
-        long status;
-        status = umount2("/.pivot_root", MNT_DETACH);
-        if (status < 0) return status;
-        return rmdir("/.pivot_root");
-    }
-
-    long mount_proc_make(start_context* context) {
-        return mount("proc", "/proc", "proc", 0, "");
-    }
-
-    long mount_sys_make(start_context* context) {
-        return mount("sys", "/sys", "sysfs", 0, "");
-    }
-
-    long mount_dev_make(start_context* context) {
-        return mount("udev", "/dev", "devtmpfs", MS_NOSUID | MS_STRICTATIME, "mode=755");
-    }
-
-    action mount_rootfs = {"mount new root", &mount_rootfs_make, &mount_rootfs_cancel};
-
-    action mkdir_oldroot = {"mkdir for old root", &mkdir_oldroot_make, &mkdir_oldroot_cancel};
-
-    action pivot_root = {"pivot root", &pivot_root_make, &empty_cancel};
-
-    action chdir_after_pivot = {"chdir after pivot", &chdir_after_pivot_make, &empty_cancel};
-
-    action umount_after_pivot = {"umount after pivot", &umount_after_pivot_make, &empty_cancel};
-
-    action mount_proc = {"mount proc", &mount_proc_make, &empty_cancel};
-
-    action mount_dev = {"mount dev", &mount_dev_make, &empty_cancel};
-
-    action mount_sys = {"mount sys", &mount_sys_make, &empty_cancel};
-
-    static action todo[] =
-            {
-                    mount_rootfs,
-                    mkdir_oldroot,
-                    pivot_root,
-                    chdir_after_pivot,
-                    umount_after_pivot,
-                    mount_proc,
-                    mount_dev,
-                    mount_sys
-            };
-
-    static int todo_size = sizeof(todo)/sizeof(*todo);
-
-    void clear_res(start_context* ctx, int from=todo_size) {
-        for (int j = from - 1; j >= 0; --j) {
-            aucont::todo[j].cancel(ctx);
+    void clear_container(start_context& ctx, CONTAINER_STAGE stage=C_FULL) {
+        bool need_to_delete_old_root = true;
+        bool need_to_umount = true;
+        std::string to_umount = ctx.fs;
+        std::string to_rmdir = container_old(ctx.fs);
+        switch (stage) {
+            case C_FULL:
+            case C_RMDIR:
+                need_to_delete_old_root = false;
+            case C_UMOUNT:
+                need_to_umount = false;
+            case C_PIVOT:
+                to_umount = "/";
+                to_rmdir = "/.old_root";
+            case C_MOUNT:
+                if (need_to_umount && umount(to_umount.c_str()) < 0) perror("unmount fs");
+            case C_MKDIR:
+                if (need_to_delete_old_root && rmdir(container_old(ctx.fs).c_str()) < 0) perror("rmdir old root");
+            case C_NOTHING:
+                break;
         }
     }
 
-
-    void check_directory() {
-        struct stat st = {0};
-        if (stat(aucont::home_dir.c_str(), &st) == -1 &&
-                mkdir(aucont::home_dir.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH) < 0) {
-            std::cout << "Can't create home directory for aucont." << std::endl;
-            exit(EXIT_FAILURE);
-        }
-    }
 }
 
 

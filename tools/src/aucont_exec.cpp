@@ -1,17 +1,5 @@
 #include "util.h"
 
-#include <iostream>
-#include <string>
-#include <sstream>
-
-#include <stdio.h>
-#include <errno.h>
-#include <sched.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <cstring>
 
 
 using namespace std;
