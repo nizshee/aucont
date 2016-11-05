@@ -43,8 +43,8 @@ namespace aucont {
         pid_t pid;
         bool is_daemon;
         char hostname[100];
-        char fs[50];
-        char argv[10][50];
+        char fs[100];
+        char argv[5][100];
         uint8_t argc;
     } start_context;
 
@@ -132,13 +132,18 @@ namespace aucont {
 
     int prepare_container(start_context& ctx) {
 
+        if (mount(NULL, "/", NULL, MS_PRIVATE | MS_REC, NULL) < 0) {
+            perror("mkdir old root");
+            clear_container(ctx, C_NOTHING);
+        }
+
         if (mkdir(container_old(ctx.fs).c_str(), 0777) < 0) {
             perror("mkdir old root");
             clear_container(ctx, C_NOTHING);
             return EXIT_FAILURE;
         }
 
-        if (mount(ctx.fs, ctx.fs, "bind", MS_PRIVATE | MS_REC, NULL) < 0) {
+        if (mount(ctx.fs, ctx.fs, "bind", MS_BIND | MS_REC, NULL) < 0) {
             perror("mount fs");
             clear_container(ctx, C_MKDIR);
             return EXIT_FAILURE;
