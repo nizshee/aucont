@@ -138,7 +138,7 @@ namespace aucont {
             return EXIT_FAILURE;
         }
 
-        if (mount(ctx.fs, ctx.fs, "bind", MS_BIND | MS_REC, NULL) < 0) {
+        if (mount(ctx.fs, ctx.fs, "bind", MS_PRIVATE | MS_REC, NULL) < 0) {
             perror("mount fs");
             clear_container(ctx, C_MKDIR);
             return EXIT_FAILURE;
@@ -159,24 +159,35 @@ namespace aucont {
         if (rmdir("/.old_root") < 0) {
             perror("rmdir old root");
             clear_container(ctx, C_UMOUNT);
+            return EXIT_FAILURE;
+        }
+
+        if (chroot("/") < 0) {
+            perror("chroot");
+            clear_container(ctx, C_RMDIR);
+            return EXIT_FAILURE;
         }
 
         if (mount("proc", "/proc", "proc", 0, "") < 0) {
             perror("proc");
+            clear_container(ctx, C_RMDIR);
             return EXIT_FAILURE;
         }
 
         if (mount("sys", "/sys", "sysfs", 0, "") < 0) {
             perror("sys");
+            clear_container(ctx, C_RMDIR);
             return EXIT_FAILURE;
         }
 
         if (mount("udev", "/dev", "devtmpfs", MS_NOSUID | MS_STRICTATIME, "mode=755") < 0) {
             perror("udev");
+            clear_container(ctx, C_RMDIR);
             return EXIT_FAILURE;
         }
 
         if (sethostname(ctx.hostname, strlen(ctx.hostname)) < 0) {
+            clear_container(ctx, C_RMDIR);
             return EXIT_FAILURE;
         }
 

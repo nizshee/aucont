@@ -23,7 +23,7 @@ static int child_func(void *arg) {
     }
     read(input_pd, &ctx, sizeof(aucont::start_context));
 
-    if (ctx.is_daemon) daemonize_after_fork(); // TODO mv to prepare container
+//    if (ctx.is_daemon) daemonize_after_fork(); // TODO mv to prepare container
 
     status = aucont::prepare_container(ctx);
     write(output_pd, &status, sizeof(int));
@@ -95,19 +95,19 @@ int main(int argc, char *argv[]) {
 
     // TODO create method clone
     /* Allocate stack for child */
-
     stack = malloc(STACK_SIZE);
     if (stack == NULL) errExit("malloc");
     stackTop = stack + STACK_SIZE;  /* Assume stack grows downward */
 
-
-    pid = clone(child_func, stackTop, CLONE_NEWUTS | CLONE_NEWPID | CLONE_NEWNS | SIGCHLD, pipefd3);
+    pid = clone(child_func, stackTop, CLONE_NEWUTS | CLONE_NEWPID | CLONE_NEWNS | SIGCHLD | CLONE_NEWUSER |
+                                      CLONE_NEWIPC, pipefd3);
     if (pid == -1) errExit("clone");
     close(pipefd1[1]);
     close(pipefd2[0]);
 
     ctx.pid = pid;
     status = aucont::prepare_environment(ctx);
+
     write(output_pd, &status, sizeof(int));
     if (status != EXIT_SUCCESS) {
         exit(EXIT_FAILURE);
