@@ -1,42 +1,64 @@
-#include "util.h"
+
+#include <iostream>
+#include <sstream>
+#include <array>
+#include <fstream>
+
+#include <cstring>
+#include <fcntl.h>
+#include <unistd.h>
+
+#include <sys/wait.h>
+#include "include/util.h"
 
 
-
-using namespace std;
-
-int main(int argc, char *argv[]) {
-
-    if (argc <= 2) {
-        std::cout << "no container id" << std::endl;
-        exit(1);
+void unshare(std::string pid, std::string ns) {
+    std::string f = "/proc/" + pid + "/ns/" + ns;
+    int fd = open(f.c_str(), O_RDONLY);
+    if (fd < 0) {
+        err_exit(ns.c_str());
     }
-
-    int count = 0;
-    char* ps[10];
-    char params[10][50];
-    for (int i = 2; i < argc; ++i) {
-        ps[count] = params[count];
-        strcpy(params[count++], argv[i]);
+    if (setns(fd, 0) < 0) {
+        close(fd);
+        err_exit(ns.c_str());
     }
-    ps[count] = NULL;
-
-
-    string ns = string("/proc/") + argv[1] + "/ns/";
-    int ns_mnt = open((ns + "mnt").c_str(), O_RDONLY, O_CLOEXEC);
-    int ns_uts = open((ns + "uts").c_str(), O_RDONLY, O_CLOEXEC);
-    int ns_pid = open((ns + "pid").c_str(), O_RDONLY, O_CLOEXEC);
-
-    if (setns(ns_pid, 0) < 0) errExit("pid");
-    close(ns_pid);
-    if (setns(ns_mnt, 0) < 0) errExit("mount");
-    close(ns_mnt);
-    if (setns(ns_uts, 0) < 0) errExit("uts");
-    close(ns_uts);
-
-
-
-    execv(argv[2], ps);
-
-    return 0;
+    close(fd);
 }
 
+
+int main(int argc, char* argv[]) {
+
+    if (argc < 3) {
+        err_exit("not enough arguments");
+    }
+
+    std::string cont_pid_str = std::string(argv[1]);
+
+    unshare(cont_pid_str, "user");
+    unshare(cont_pid_str, "pid");
+
+    auto cmd_pid = fork();
+    if (cmd_pid < 0) {
+        err_exit("fork");
+    } else if (cmd_pid > 0) {
+        if (waitpid(cmd_pid, NULL, 0) < 0) {
+            err_exit("waitpid");
+        }
+        exit(0);
+    }
+
+    unshare(cont_pid_str, "net");
+    unshare(cont_pid_str, "ipc");
+    unshare(cont_pid_str, "uts");
+    unshare(cont_pid_str, "mnt");
+
+    char* params[10];
+    for (int i = 0; i < argc - 2; ++i) {
+        params[i] = argv[i + 2];
+    }
+    params[argc - 2] = NULL;
+    if (execv(params[0], params) < 0) {
+        err_exit("exec");
+    }
+    return 0;
+}

@@ -1,27 +1,15 @@
 FROM eabatalov/aucont16-test-base
-MAINTAINER Roman Vasilev
 
+MAINTAINER Roman Vasiliev
 
-# RUN apt-get update
-# RUN apt-get install -y g++
-# RUN apt-get install -y cmake
-# RUN apt-get install -y python3
-
-# RUN chown dev:dev -R /test
-
-# USER dev
-
-COPY task_stuff/rootfs /test/rootfs
-COPY task_stuff/scripts /test/scripts
 COPY tools /test/aucont
+COPY task_stuff/scripts /test/scripts
+COPY task_stuff/rootfs /test/rootfs
 
-# RUN chown 1000:1000 -R /test
+USER root
 
-#RUN /test/aucont/build.sh
+RUN chown -R dev:dev /test
+RUN chmod -R 777 /test
 
-#RUN cd /test/aucont/ && cmake .
-#RUN mkdir /test/aucont/bin
-#RUN ls /test/aucont/
-#RUN cd /test/aucont/ && make
-
+USER dev
 
