@@ -1,5 +1,6 @@
 .idea
 task_stuff.tar.gz
+tools/bin
 
 CMakeCache.txt
 CMakeFiles
