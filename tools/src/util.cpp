@@ -47,12 +47,12 @@ int aucont::prepare_environment(start_context& ctx) {
 
     if (stat(aucont::home_dir.c_str(), &st) == -1 &&
         mkdir(aucont::home_dir.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH) < 0) {
-        perror("mkdir aucont");
+        perror("(environment) mkdir aucont");
         return EXIT_FAILURE;
     }
 
     if (mkdir(container_dir(ctx.pid).c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH) < 0) {
-        perror("mkdir container");
+        perror("(environment) mkdir container");
         clear_environment(ctx, E_NOTHING);
         return EXIT_FAILURE;
     }
@@ -60,7 +60,7 @@ int aucont::prepare_environment(start_context& ctx) {
     if ((ptr = fopen(container_ctx(ctx.pid).c_str(), "wb")) == NULL ||
         fwrite(&ctx, sizeof(start_context), 1, ptr) < 0 ||
         fclose(ptr)) {
-        perror("write context");
+        perror("(environment) write context");
         clear_environment(ctx, E_CONTAINER);
         return EXIT_FAILURE;
     }
@@ -69,7 +69,7 @@ int aucont::prepare_environment(start_context& ctx) {
     if ((ptr = fopen(("/proc/" + pid + "/setgroups").c_str(), "wb")) == NULL || // TODO
         fprintf(ptr, "deny") < 0 ||
         fclose(ptr)) {
-        perror("setgroups");
+        perror("(environment) setgroups");
         clear_environment(ctx, E_CONTAINER);
         return EXIT_FAILURE;
     }
@@ -77,7 +77,7 @@ int aucont::prepare_environment(start_context& ctx) {
     if ((ptr = fopen(("/proc/" + pid + "/uid_map").c_str(), "wb")) == NULL || // TODO
         fprintf(ptr, "0 %d 1", getuid()) < 0 ||
         fclose(ptr)) {
-        perror("uid_map");
+        perror("(environment) uid_map");
         clear_environment(ctx, E_CONTAINER);
         return EXIT_FAILURE;
     }
@@ -85,7 +85,7 @@ int aucont::prepare_environment(start_context& ctx) {
     if ((ptr = fopen(("/proc/" + pid + "/gid_map").c_str(), "wb")) == NULL || // TODO
         fprintf(ptr, "0 %d 1", getgid()) < 0 ||
         fclose(ptr)) {
-        perror("uid_map");
+        perror("(environment) uid_map");
         clear_environment(ctx, E_CONTAINER);
         return EXIT_FAILURE;
     }
@@ -98,9 +98,9 @@ void aucont::clear_environment(start_context& ctx, ENVIRONMENT_STAGE stage) {
         case E_FULL:
         case E_MAP:
         case E_CTX:
-            if (remove(container_ctx(ctx.pid).c_str()) < 0) perror("rm context");
+            if (remove(container_ctx(ctx.pid).c_str()) < 0) perror("(cl environment) rm context");
         case E_CONTAINER:
-            if (rmdir(container_dir(ctx.pid).c_str()) < 0) perror("rmdir container");
+            if (rmdir(container_dir(ctx.pid).c_str()) < 0) perror("(cl environment) rmdir container");
         case E_NOTHING:
             break;
     }
@@ -109,61 +109,61 @@ void aucont::clear_environment(start_context& ctx, ENVIRONMENT_STAGE stage) {
 int aucont::prepare_container(start_context& ctx) {
 
     if (sethostname(ctx.hostname, strlen(ctx.hostname)) < 0) {
-        perror("hostname");
+        perror("(container) hostname");
         clear_container(ctx, C_NOTHING);
         return EXIT_FAILURE;
     }
 
     if (mount(NULL, "/", NULL, MS_PRIVATE | MS_REC, NULL) < 0) {
-        perror("private");
+        perror("(container) private");
         clear_container(ctx, C_NOTHING);
         return EXIT_FAILURE;
     }
 
     if (mount(NULL, container_proc(ctx.fs).c_str(), "proc", MS_NOSUID | MS_NOEXEC | MS_NODEV, NULL) < 0) {
-        perror("proc");
+        perror("(container) proc");
         clear_container(ctx, C_NOTHING);
         return EXIT_FAILURE;
     }
 
     if (mount(NULL, container_sys(ctx.fs).c_str(), "sysfs", MS_NOSUID | MS_NOEXEC | MS_NODEV, NULL) < 0) {
-        perror("sys");
+        perror("(container) sys");
         clear_container(ctx, C_PROC);
         return EXIT_FAILURE;
     }
 
     if (mkdir(container_old(ctx.fs).c_str(), 0777) < 0) {
-        perror("mkdir");
+        perror("(container) mkdir");
         clear_container(ctx, C_SYS);
         return EXIT_FAILURE;
     }
 
     if (mount(ctx.fs, ctx.fs, "bind", MS_BIND | MS_REC, NULL) < 0) {
-        perror("mount");
+        perror("(container) mount");
         clear_container(ctx, C_MKDIR);
         return EXIT_FAILURE;
     }
 
     if (syscall(SYS_pivot_root, ctx.fs, container_old(ctx.fs).c_str()) < 0) {
-        perror("pivot");
+        perror("(container) pivot");
         clear_container(ctx, C_MOUNT);
         return EXIT_FAILURE;
     }
 
     if (chdir("/") != 0) {
-        perror("chdir");
+        perror("(container) chdir");
         clear_container(ctx, C_PIVOT);
         return EXIT_FAILURE;
     }
 
     if (umount2("/.old_root", MNT_DETACH) < 0) {
-        perror("umount");
+        perror("(container) umount");
         clear_container(ctx, C_PIVOT);
         return EXIT_FAILURE;
     }
 
     if (rmdir("/.old_root") < 0) {
-        perror("rmdir");
+        perror("(container) rmdir");
         clear_container(ctx, C_UMOUNT);
         return EXIT_FAILURE;
     }
@@ -184,13 +184,17 @@ void aucont::clear_container(start_context& ctx, CONTAINER_STAGE stage) {
             fs = "/";
             need_to_umount_old_root = false;
         case C_MOUNT:
-            if (need_to_umount_old_root) umount(container_old(fs.c_str()).c_str());
+            if (need_to_umount_old_root) {
+                if (umount(container_old(fs.c_str()).c_str()) < 0) perror("(cl container) umount");
+            }
         case C_MKDIR:
-            if (need_to_remove_old_root) rmdir(container_old(fs.c_str()).c_str());
+            if (need_to_remove_old_root) {
+                if (rmdir(container_old(fs.c_str()).c_str()) < 0) perror("(cl container) rmdir");
+            }
         case C_SYS:
-            umount(container_sys(fs.c_str()).c_str());
+            if (umount(container_sys(fs.c_str()).c_str()) < 0) perror("(cl container) sys");
         case C_PROC:
-            umount(container_proc(fs.c_str()).c_str());
+            if (umount(container_proc(fs.c_str()).c_str()) < 0) perror("(cl container) proc");
         case C_NOTHING:
             break;
     }
@@ -199,21 +203,21 @@ void aucont::clear_container(start_context& ctx, CONTAINER_STAGE stage) {
 
 void daemonize_after_fork() {
     if (setsid() < 0) {
-        err_exit("setsid");
+        err_exit("(daemonize) setsid");
     }
 
     if (chdir("/") < 0) {
-        err_exit("chdir");
+        err_exit("(daemonize) chdir");
     }
 
     int fd = open("/dev/null", O_RDWR, 0);
 
     if (fd != -1) {
-        if (dup2(fd, STDIN_FILENO) < 0) err_exit("dup stdin");
-        if (dup2(fd, STDOUT_FILENO) < 0) err_exit("dup stdout");
-        if (dup2(fd, STDERR_FILENO) < 0) err_exit("dup stderr");
+        if (dup2(fd, STDIN_FILENO) < 0) err_exit("(daemonize) dup stdin");
+        if (dup2(fd, STDOUT_FILENO) < 0) err_exit("(daemonize) dup stdout");
+        if (dup2(fd, STDERR_FILENO) < 0) err_exit("(daemonize) dup stderr");
         if (fd > 2 && close(fd) < 0) {
-            err_exit("close fd");
+            err_exit("(daemonize) close fd");
         }
     }
 
@@ -232,29 +236,29 @@ int container_main(void *arg) {
     aucont::start_context ctx;
     read(input_fd, &ctx, sizeof(aucont::start_context));
 
-    if (ctx.is_daemon) {
-        daemonize_after_fork();
-    }
-
     if (unshare(CLONE_NEWPID) < 0) {
-        err_exit("unshare");
+        err_exit("(main) unshare");
     }
 
     pid = fork();
     if (pid < 0) {
-        err_exit("fork");
+        err_exit("(main) fork");
     } else if (pid > 0) {
         if (close(input_fd) < 0) {
-            err_exit("close");
+            err_exit("(main) close");
         }
         write(output_fd, &pid, sizeof(pid));
         if (close(output_fd) < 0) {
-            err_exit("close");
+            err_exit("(main) close");
         }
         if (waitpid(pid, NULL, 0) < 0) {
-            err_exit("waitpid");
+            err_exit("(main) waitpid");
         }
         exit(0);
+    }
+
+    if (ctx.is_daemon) {
+        daemonize_after_fork();
     }
 
     read(input_fd, &status, sizeof(int));
@@ -265,11 +269,12 @@ int container_main(void *arg) {
     status = aucont::prepare_container(ctx);
     write(output_fd, &status, sizeof(int));
     if (status != EXIT_SUCCESS) {
+        std::cout << "(start) status" << std::endl;
         exit(EXIT_SUCCESS);
     }
 
     if (close(input_fd) < 0 || close(output_fd) < 0) {
-        perror("close");
+        perror("(main) close");
         aucont::clear_container(ctx);
         exit(EXIT_FAILURE);
     }
@@ -279,7 +284,7 @@ int container_main(void *arg) {
     params[ctx.argc] = NULL;
 
     if (execv(params[0], params) < 0) {
-        err_exit("Can't run command in container");
+        err_exit("(main) exec");
     }
     return 0;
 }
@@ -297,16 +302,16 @@ void aucont::start_container(aucont::start_context& ctx) {
 
     if (pipe2(pipe_fds, O_CLOEXEC) < 0 ||
         pipe2(pipe_fds + 2, O_CLOEXEC) < 0) {
-        err_exit("pipe");
+        err_exit("(start) pipe");
     }
 
     stack = (char*) malloc(stack_size);
-    if (stack == NULL) err_exit("malloc");
+    if (stack == NULL) err_exit("(start) malloc");
     pid = clone(container_main, stack + stack_size,
                 CLONE_NEWNS | CLONE_NEWUSER | CLONE_NEWUTS | CLONE_NEWNET | CLONE_NEWIPC | SIGCHLD, pipe_fds);
 
     if (pid < 0) {
-        err_exit("clone");
+        err_exit("(start) clone");
     }
     close(pipe_fds[0]);
     close(pipe_fds[3]);
@@ -320,6 +325,7 @@ void aucont::start_container(aucont::start_context& ctx) {
     if (status != EXIT_SUCCESS) exit(EXIT_FAILURE);
     read(input_fd, &status, sizeof(int));
     if (status != EXIT_SUCCESS) {
+        std::cout << "(start) status" << std::endl;
         clear_environment(ctx);
         exit(EXIT_FAILURE);
     }
