@@ -236,6 +236,10 @@ int container_main(void *arg) {
     aucont::start_context ctx;
     read(input_fd, &ctx, sizeof(aucont::start_context));
 
+    if (ctx.is_daemon) {
+        daemonize_after_fork();
+    }
+
     if (unshare(CLONE_NEWPID) < 0) {
         err_exit("(main) unshare");
     }
@@ -255,10 +259,6 @@ int container_main(void *arg) {
             err_exit("(main) waitpid");
         }
         exit(0);
-    }
-
-    if (ctx.is_daemon) {
-        daemonize_after_fork();
     }
 
     read(input_fd, &status, sizeof(int));
