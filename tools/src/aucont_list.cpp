@@ -19,7 +19,7 @@ int main(int argc, char* argv[]) {
     }
 
     while ((dp = readdir(dirp)) != NULL) {
-        if (strcmp(dp->d_name, ".") != 0 && strcmp(dp->d_name, "..") != 0) {
+        if (strcmp(dp->d_name, ".") != 0 && strcmp(dp->d_name, "..") != 0 && strcmp(dp->d_name, "cg") != 0) {
             std::cout << dp->d_name << std::endl;
         }
     }

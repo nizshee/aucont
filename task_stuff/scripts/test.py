@@ -83,12 +83,13 @@ def test_cpu_perc_limit():
 
     output = aucont.run_cmd(
         util.test_rootfs_path(), '/test/busyloop/bin/run.sh',
-        cpu_perc=20
+        cpu_perc=25 # changed from 20 because condition checks that boost is near 4 times
     ).strip()
     limited_result_20_perc = int(output)
     util.debug(unlimited_result, limited_result_20_perc)
 
     cpu_boost = unlimited_result / limited_result_20_perc
+    print("cpu_boost is ", cpu_boost)
     util.check(cpu_boost >= 3 and cpu_boost <= 5)
 
 def test_basic_networking():
@@ -223,22 +224,22 @@ def main():
     build_tools()
     cleanup()
     try:
+        test_cpu_perc_limit()
+        test_basic_networking()
+        test_webserver()
+        test_many_cont_networks()
+
         test_simple_start_stop()
         test_hostname()
         test_daemonization()
-        test_fs_contents()
         test_start_with_interactive_shell()
+        test_fs_contents()
 
         test_many_conts_start_stop()
         test_many_cont_list()
         test_cont_user_is_root()
         test_cont_user_root_is_fake()
         test_host_user_uid_preserved()
-
-        # test_cpu_perc_limit()
-        # test_basic_networking()
-        # test_webserver()
-        # test_many_cont_networks()
 
         util.log('===== ALL TESTS ARE PASSED! =====')
 

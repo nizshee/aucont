@@ -13,6 +13,8 @@ extern "C" {
 #include <sys/mount.h>
 #include <sys/syscall.h>
 #include <fcntl.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 }
 
 #define err_exit(msg)    do { perror(msg); exit(EXIT_FAILURE); \
@@ -24,9 +26,15 @@ extern "C" {
 
 namespace aucont {
 
+    std::string exec(const char* cmd);
+
     const std::string home_dir = "/tmp/aucont";
 
+    const std::string cgroup_dir = home_dir + "/cg";
+
     std::string container_dir(pid_t pid);
+
+    std::string container_cgroup_dir(pid_t pid);
 
     std::string container_ctx(pid_t pid);
 
@@ -43,6 +51,9 @@ namespace aucont {
         char fs[100];
         char argv[5][100];
         uint8_t argc;
+        int cpu;
+        bool is_net;
+        struct in_addr ip;
     } start_context;
 
     int load_ctx(pid_t pid, start_context& ctx);
@@ -56,6 +67,7 @@ namespace aucont {
         E_MAP,
         E_CTX,
         E_CONTAINER,
+        E_CGROUP,
         E_NOTHING
     };
 

@@ -1,11 +1,29 @@
 #include <fstream>
 #include <wait.h>
+#include <memory>
+#include <sstream>
 
 #include "include/util.h"
 
 
+std::string aucont::exec(const char* cmd) {
+    char buffer[128];
+    std::string result = "";
+    std::shared_ptr<FILE> pipe(popen(cmd, "r"), pclose);
+    if (!pipe) throw std::runtime_error("popen() failed!");
+    while (!feof(pipe.get())) {
+        if (fgets(buffer, 128, pipe.get()) != NULL)
+            result += buffer;
+    }
+    return result;
+}
+
 std::string aucont::container_dir(pid_t pid) {
     return home_dir + "/" + std::to_string(pid);
+}
+
+std::string aucont::container_cgroup_dir(pid_t pid) {
+    return cgroup_dir + "/" + std::to_string(pid);
 }
 
 std::string aucont::container_ctx(pid_t pid) {
@@ -51,9 +69,95 @@ int aucont::prepare_environment(start_context& ctx) {
         return EXIT_FAILURE;
     }
 
+    if (stat(aucont::cgroup_dir.c_str(), &st) == -1 &&
+        mkdir(aucont::cgroup_dir.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH) < 0) {
+        perror("(environment) mkdir cgroup");
+        return EXIT_FAILURE;
+    }
+
+    if (ctx.is_net) {
+
+        std::string host_iname = "aucont" + std::to_string(ctx.pid) + "h";
+        std::string cont_iname = "aucont" + std::to_string(ctx.pid) + "c";
+        std::string host_ip = inet_ntoa(inet_makeaddr(inet_netof(ctx.ip), inet_lnaof(ctx.ip) + 1));
+
+        std::stringstream ss;
+        ss << "sudo ip link add " << host_iname << " type veth peer name " << cont_iname << " && " << std::endl;
+        ss << "sudo ip link set " << cont_iname << " netns " << ctx.pid << " && " << std::endl;
+        ss << "sudo ip addr add " << host_ip << "/24 dev " << host_iname << " && " << std::endl;
+        ss << "sudo ip link set " << host_iname << " up && " << std::endl;
+        ss << "sudo sysctl net.ipv4.conf.all.forwarding=1 > /dev/null" << std::endl;
+
+        std::cerr << ss.str() << std::endl;
+        if (system(ss.str().c_str()) < 0) {
+            perror("(environment) ip");
+            return EXIT_FAILURE;
+        }
+    }
+
+    if (ctx.cpu < 100 ) {
+
+        std::string opts =  aucont::exec("mount | grep cgroup | grep cpu | grep -o \"(.*)\" | head -n 1");
+        if (opts == "") {
+            opts = "cpu";
+        } else {
+            opts = opts.substr(1, opts.length() - 3);
+        }
+
+        std::cerr << opts << std::endl;
+
+        if (system(("sudo mount -t cgroup -o " + opts + " aucont_cg " + cgroup_dir).c_str()) < 0) {
+            perror("(environment) mount cgroup");
+            return EXIT_FAILURE;
+        }
+
+        if (system(("sudo mkdir -p " + aucont::container_cgroup_dir(ctx.pid)).c_str()) < 0) {
+            perror("(environment) mkdir container cgroup");
+            clear_environment(ctx, E_NOTHING);
+            return EXIT_FAILURE;
+        }
+
+        std::string uid = std::to_string(getuid());
+        std::string gid = std::to_string(getgid());
+        if (system(("sudo chown -R " + uid + ":" + gid + " " + aucont::container_cgroup_dir(ctx.pid)).c_str()) < 0) {
+            perror("(environment) chown container cgroup");
+            clear_environment(ctx, E_CGROUP);
+            return EXIT_FAILURE;
+        }
+
+        int period = 1000000;
+        int cores = (int) sysconf(_SC_NPROCESSORS_ONLN);
+        int quota = (period * cores * ctx.cpu) / 100;
+
+        if ((ptr = fopen((container_cgroup_dir(ctx.pid) + "/cpu.cfs_period_us").c_str(), "wb")) == NULL ||
+            fprintf(ptr, "%d\n", period) < 0 ||
+            fclose(ptr)) {
+            perror("(environment) write period");
+            clear_environment(ctx, E_CGROUP);
+            return EXIT_FAILURE;
+        }
+
+        if ((ptr = fopen((container_cgroup_dir(ctx.pid) + "/cpu.cfs_quota_us").c_str(), "wb")) == NULL ||
+            fprintf(ptr, "%d\n", quota) < 0 ||
+            fclose(ptr)) {
+            perror("(environment) write quota");
+            clear_environment(ctx, E_CGROUP);
+            return EXIT_FAILURE;
+        }
+
+        if ((ptr = fopen((container_cgroup_dir(ctx.pid) + "/tasks").c_str(), "wb")) == NULL ||
+            fprintf(ptr, "%d\n", ctx.pid) < 0 ||
+            fclose(ptr)) {
+            perror("(environment) write task");
+            clear_environment(ctx, E_CGROUP);
+            return EXIT_FAILURE;
+        }
+
+    }
+
     if (mkdir(container_dir(ctx.pid).c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH) < 0) {
         perror("(environment) mkdir container");
-        clear_environment(ctx, E_NOTHING);
+        clear_environment(ctx, E_CGROUP);
         return EXIT_FAILURE;
     }
 
@@ -66,7 +170,7 @@ int aucont::prepare_environment(start_context& ctx) {
     }
 
     std::string pid = std::to_string(ctx.pid);
-    if ((ptr = fopen(("/proc/" + pid + "/setgroups").c_str(), "wb")) == NULL || // TODO
+    if ((ptr = fopen(("/proc/" + pid + "/setgroups").c_str(), "wb")) == NULL ||
         fprintf(ptr, "deny") < 0 ||
         fclose(ptr)) {
         perror("(environment) setgroups");
@@ -74,7 +178,7 @@ int aucont::prepare_environment(start_context& ctx) {
         return EXIT_FAILURE;
     }
 
-    if ((ptr = fopen(("/proc/" + pid + "/uid_map").c_str(), "wb")) == NULL || // TODO
+    if ((ptr = fopen(("/proc/" + pid + "/uid_map").c_str(), "wb")) == NULL ||
         fprintf(ptr, "0 %d 1", getuid()) < 0 ||
         fclose(ptr)) {
         perror("(environment) uid_map");
@@ -82,13 +186,14 @@ int aucont::prepare_environment(start_context& ctx) {
         return EXIT_FAILURE;
     }
 
-    if ((ptr = fopen(("/proc/" + pid + "/gid_map").c_str(), "wb")) == NULL || // TODO
+    if ((ptr = fopen(("/proc/" + pid + "/gid_map").c_str(), "wb")) == NULL ||
         fprintf(ptr, "0 %d 1", getgid()) < 0 ||
         fclose(ptr)) {
         perror("(environment) uid_map");
         clear_environment(ctx, E_CONTAINER);
         return EXIT_FAILURE;
     }
+
 
     return EXIT_SUCCESS;
 }
@@ -101,6 +206,12 @@ void aucont::clear_environment(start_context& ctx, ENVIRONMENT_STAGE stage) {
             if (remove(container_ctx(ctx.pid).c_str()) < 0) perror("(cl environment) rm context");
         case E_CONTAINER:
             if (rmdir(container_dir(ctx.pid).c_str()) < 0) perror("(cl environment) rmdir container");
+        case E_CGROUP:
+            if (ctx.cpu < 100) { // TODO
+                umount(container_cgroup_dir(ctx.pid).c_str());
+                if (system(("sudo rmdir " + container_cgroup_dir(ctx.pid)).c_str()) < 0 )
+                    perror("(cl environment) rmdir cgroup");
+            }
         case E_NOTHING:
             break;
     }
@@ -112,6 +223,25 @@ int aucont::prepare_container(start_context& ctx) {
         perror("(container) hostname");
         clear_container(ctx, C_NOTHING);
         return EXIT_FAILURE;
+    }
+
+    if (ctx.is_net) {
+        std::string cont_iname = "aucont" + std::to_string(ctx.pid) + "c";
+        std::string host_ip = inet_ntoa(inet_makeaddr(inet_netof(ctx.ip), inet_lnaof(ctx.ip) + 1));
+        std::string cont_ip = inet_ntoa(inet_makeaddr(inet_netof(ctx.ip), inet_lnaof(ctx.ip)));
+
+        std::stringstream ss;
+        ss << "ip addr add " << cont_ip << "/24 dev " << cont_iname << " && " << std::endl;
+        ss << "ip link set " << cont_iname << " up && " << std::endl;
+        ss << "ip route add default via " << host_ip << " && " << std::endl;
+        ss << "ip link set lo up" << std::endl;
+
+        std::cerr << ss.str() << std::endl;
+
+        if (system(ss.str().c_str()) < 0) {
+            perror("(environment) ip");
+            return EXIT_FAILURE;
+        }
     }
 
     if (mount(NULL, "/", NULL, MS_PRIVATE | MS_REC, NULL) < 0) {
@@ -202,6 +332,7 @@ void aucont::clear_container(start_context& ctx, CONTAINER_STAGE stage) {
 
 
 void daemonize_after_fork() {
+
     if (setsid() < 0) {
         err_exit("(daemonize) setsid");
     }
@@ -262,6 +393,7 @@ int container_main(void *arg) {
     }
 
     read(input_fd, &status, sizeof(int));
+    read(input_fd, &ctx.pid, sizeof(int));
     if (status != EXIT_SUCCESS) {
         exit(EXIT_SUCCESS);
     }
@@ -283,7 +415,7 @@ int container_main(void *arg) {
     for (int i = 0; i < ctx.argc; ++i) params[i] = ctx.argv[i];
     params[ctx.argc] = NULL;
 
-    if (execv(params[0], params) < 0) {
+    if (execvp(params[0], params) < 0) {
         err_exit("(main) exec");
     }
     return 0;
@@ -321,7 +453,10 @@ void aucont::start_container(aucont::start_context& ctx) {
     ctx.pid = pid;
 
     status = prepare_environment(ctx);
+
     write(output_fd, &status, sizeof(int));
+    write(output_fd, &ctx.pid, sizeof(int));
+
     if (status != EXIT_SUCCESS) exit(EXIT_FAILURE);
     read(input_fd, &status, sizeof(int));
     if (status != EXIT_SUCCESS) {

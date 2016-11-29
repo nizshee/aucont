@@ -27,24 +27,50 @@ void unshare(std::string pid, std::string ns) {
 
 
 int main(int argc, char* argv[]) {
+    FILE *ptr;
+    aucont::start_context ctx;
+    int pipe_fd[2];
+    int status;
+
 
     if (argc < 3) {
         err_exit("not enough arguments");
     }
 
+    pid_t pid = atoi(argv[1]);
     std::string cont_pid_str = std::string(argv[1]);
+    aucont::load_ctx(pid, ctx);
 
     unshare(cont_pid_str, "user");
     unshare(cont_pid_str, "pid");
 
-    auto cmd_pid = fork();
+    if (pipe2(pipe_fd, O_CLOEXEC) < 0) {
+        err_exit("pipe");
+    }
+    pid_t cmd_pid = fork();
     if (cmd_pid < 0) {
         err_exit("fork");
     } else if (cmd_pid > 0) {
+        close(pipe_fd[0]);
+        if (ctx.cpu < 100) {
+            if ((ptr = fopen((aucont::container_cgroup_dir(ctx.pid) + "/tasks").c_str(), "a")) == NULL ||
+                fprintf(ptr, "%i\n", cmd_pid) < 0 ||
+                fclose(ptr)) {
+                err_exit("(exec) write task");
+            }
+        }
+        status = EXIT_SUCCESS;
+        write(pipe_fd[1], &status, sizeof(int));
         if (waitpid(cmd_pid, NULL, 0) < 0) {
             err_exit("waitpid");
         }
         exit(0);
+    }
+    close(pipe_fd[1]);
+
+    read(pipe_fd[0], &status, sizeof(int));
+    if (status != EXIT_SUCCESS) {
+        exit(1);
     }
 
     unshare(cont_pid_str, "net");
@@ -57,7 +83,7 @@ int main(int argc, char* argv[]) {
         params[i] = argv[i + 2];
     }
     params[argc - 2] = NULL;
-    if (execv(params[0], params) < 0) {
+    if (execvp(params[0], params) < 0) {
         err_exit("exec");
     }
     return 0;
