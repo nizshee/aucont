@@ -369,6 +369,8 @@ int container_main(void *arg) {
 
     if (ctx.is_daemon) {
         daemonize_after_fork();
+    } else {
+        setsid();
     }
 
     if (unshare(CLONE_NEWPID) < 0) {
